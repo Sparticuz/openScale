@@ -49,6 +49,8 @@ class ScaleMeasurement(
     /** Timestamp of the weigh-in; becomes the Measurement row's timestamp, null = "now". */
     var dateTime: Date? = null,
     val values: MutableMap<MeasurementType.Key<*>, Any> = LinkedHashMap(),
+    /** App profile used for locally estimated composition; not a device user-slot ID. */
+    var compositionProfileUserId: Int? = null,
 ) {
 
     /**
@@ -95,7 +97,7 @@ class ScaleMeasurement(
      * Deep copy for handlers that publish while continuing to mutate their accumulator —
      * the map is detached, so later mutations never bleed into published data.
      */
-    fun snapshot(): ScaleMeasurement = ScaleMeasurement(userId, dateTime, LinkedHashMap(values))
+    fun snapshot(): ScaleMeasurement = ScaleMeasurement(userId, dateTime, LinkedHashMap(values), compositionProfileUserId)
 
     override fun toString(): String =
         "ScaleMeasurement(userId=$userId, dateTime=$dateTime, " +

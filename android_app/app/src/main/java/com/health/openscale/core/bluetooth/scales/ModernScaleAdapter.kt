@@ -42,6 +42,7 @@ import com.health.openscale.core.model.MeasurementWithValues
 import com.health.openscale.core.utils.ConverterUtils
 import com.health.openscale.core.utils.LogManager
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -455,6 +456,16 @@ abstract class ModernScaleAdapter(
         _isConnected.value = false
         _isConnecting.value = false
         // keep targetAddress to allow higher layer to retry if wanted
+    }
+
+    override suspend fun prepareForClose() {
+        // Suspendable emission cannot drop a flushed final on a full event buffer.
+        for (measurement in handler.takePendingMeasurements()) {
+            _events.emit(BluetoothEvent.MeasurementReceived(measurement, targetAddress ?: "unknown"))
+        }
+        val acknowledged = CompletableDeferred<Unit>()
+        _events.emit(BluetoothEvent.Drain(acknowledged))
+        acknowledged.await()
     }
 
     override fun close() {

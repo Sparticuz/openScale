@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import com.health.openscale.core.bluetooth.data.ScaleMeasurement
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.CompletableDeferred
 
 /**
  * Domain events emitted by a [ScaleCommunicator].
@@ -31,6 +32,8 @@ import kotlinx.coroutines.flow.StateFlow
  * - For such devices, [Connected] is typically never emitted.
  */
 sealed class BluetoothEvent {
+    /** Ordered teardown barrier, acknowledged after preceding events reach the connector. */
+    data class Drain(val acknowledged: CompletableDeferred<Unit>) : BluetoothEvent()
     enum class UserInteractionType {
         CHOOSE_USER,
         ENTER_CONSENT
@@ -76,6 +79,8 @@ sealed class BluetoothEvent {
  * Implementations may be GATT-based or broadcast-only (advertisement parsing).
  */
 interface ScaleCommunicator {
+    /** Flush pending readings and await consumer handoff before observation is cancelled. */
+    suspend fun prepareForClose() = Unit
 
     /** Indicates whether a connection attempt (or scan for broadcast devices) is in progress. */
     val isConnecting: StateFlow<Boolean>

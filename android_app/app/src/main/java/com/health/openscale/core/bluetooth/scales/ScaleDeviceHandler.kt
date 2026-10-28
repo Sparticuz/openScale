@@ -210,6 +210,11 @@ abstract class ScaleDeviceHandler {
     /** Optional cleanup hook. */
     protected open fun onDisconnected() = Unit
 
+    /** Stop pending-reading work and transfer unpublished finals without emitting callbacks.
+     * Default keeps existing handlers' disconnect behavior unchanged.
+     */
+    open fun takePendingMeasurements(): List<ScaleMeasurement> = emptyList()
+
     /**
      * Called for each advertisement seen for the target device (broadcast-only devices).
      * Default implementation ignores the advertisement.

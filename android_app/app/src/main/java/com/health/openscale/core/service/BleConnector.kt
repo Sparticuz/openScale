@@ -34,6 +34,9 @@ import com.health.openscale.core.facade.MeasurementFacade
 import com.health.openscale.core.utils.LogManager
 import com.health.openscale.ui.shared.SnackbarEvent
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -70,6 +73,7 @@ class BleConnector(
     private val scaleFactory: ScaleFactory,
     private val measurementFacade: MeasurementFacade,
     private val getCurrentUserId: () -> Int?,
+    private val createCommunicator: (ScannedDeviceInfo) -> ScaleCommunicator? = scaleFactory::createCommunicator,
     ) : AutoCloseable {
 
     private companion object {
@@ -99,6 +103,7 @@ class BleConnector(
     val userInteractionRequiredEvent: StateFlow<BluetoothEvent.UserInteractionRequired?> = _userInteractionRequiredEvent.asStateFlow()
 
     private var activeCommunicator: ScaleCommunicator? = null
+    private val lifecycleMutex = Mutex()
     private var communicatorJob: Job? = null // Job for observing events from the activeCommunicator.
     private var disconnectTimeoutJob: Job? = null // Job for handling disconnect timeouts.
 
@@ -146,38 +151,40 @@ class BleConnector(
     @SuppressLint("MissingPermission") // Permissions are expected to be checked by the caller.
     fun connectToDevice(deviceInfo: ScannedDeviceInfo) {
         scope.launch {
-            val deviceDisplayName = deviceInfo.name
-            LogManager.i(TAG, "Attempting to connect to $deviceDisplayName")
+            lifecycleMutex.withLock {
+                val deviceDisplayName = deviceInfo.name
+                LogManager.i(TAG, "Attempting to connect to $deviceDisplayName")
 
-            if (!deviceInfo.isSupported) {
-                LogManager.e(TAG, "Device $deviceDisplayName is NOT supported according to ScannedInfo. Connection ABORTED.")
-                _connectionError.value = "$deviceDisplayName is not supported."
-                _connectionStatus.value = ConnectionStatus.FAILED
-                return@launch
+                if (!deviceInfo.isSupported) {
+                    LogManager.e(TAG, "Device $deviceDisplayName is NOT supported according to ScannedInfo. Connection ABORTED.")
+                    _connectionError.value = "$deviceDisplayName is not supported."
+                    _connectionStatus.value = ConnectionStatus.FAILED
+                    return@launch
+                }
+
+                // Release any existing communicator and its observation job if present.
+                releaseActiveCommunicator(logPrefix = "Switching to new device: ")
+
+                _connectionStatus.value = ConnectionStatus.CONNECTING
+                _connectedDeviceAddress.value = deviceInfo.address
+                _connectedDeviceName.value = deviceInfo.name
+                _connectionError.value = null // Clear previous errors.
+
+                activeCommunicator = createCommunicator(deviceInfo)
+
+                if (activeCommunicator == null) {
+                    LogManager.e(TAG, "ScaleFactory could NOT create a communicator for $deviceDisplayName. Connection ABORTED.")
+                    _connectionError.value = "Driver for $deviceDisplayName not found or internal error."
+                    _connectionStatus.value = ConnectionStatus.FAILED
+                    _connectedDeviceAddress.value = null
+                    _connectedDeviceName.value = null
+                    return@launch
+                }
+
+                LogManager.i(TAG, "ActiveCommunicator successfully created: ${activeCommunicator!!.javaClass.simpleName}. Starting observation job...")
+                observeActiveCommunicatorEvents(deviceInfo)
+                activeCommunicator?.connect(deviceInfo.address)
             }
-
-            // Release any existing communicator and its observation job if present.
-            releaseActiveCommunicator(logPrefix = "Switching to new device: ")
-
-            _connectionStatus.value = ConnectionStatus.CONNECTING
-            _connectedDeviceAddress.value = deviceInfo.address
-            _connectedDeviceName.value = deviceInfo.name
-            _connectionError.value = null // Clear previous errors.
-
-            activeCommunicator = scaleFactory.createCommunicator(deviceInfo)
-
-            if (activeCommunicator == null) {
-                LogManager.e(TAG, "ScaleFactory could NOT create a communicator for $deviceDisplayName. Connection ABORTED.")
-                _connectionError.value = "Driver for $deviceDisplayName not found or internal error."
-                _connectionStatus.value = ConnectionStatus.FAILED
-                _connectedDeviceAddress.value = null
-                _connectedDeviceName.value = null
-                return@launch
-            }
-
-            LogManager.i(TAG, "ActiveCommunicator successfully created: ${activeCommunicator!!.javaClass.simpleName}. Starting observation job...")
-            observeActiveCommunicatorEvents(deviceInfo)
-            activeCommunicator?.connect(deviceInfo.address)
         }
     }
 
@@ -192,10 +199,10 @@ class BleConnector(
     private fun observeActiveCommunicatorEvents(connectedDeviceInfo: ScannedDeviceInfo) {
         val deviceDisplayName = connectedDeviceInfo.name
         communicatorJob?.cancel() // Ensure any previous observation job is stopped.
-        communicatorJob = scope.launch {
+        communicatorJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             activeCommunicator?.let { comm ->
                 // Observe the isConnected Flow from the Communicator.
-                launch {
+                launch(start = CoroutineStart.UNDISPATCHED) {
                     comm.isConnected.collect { isConnected ->
                         LogManager.d(TAG, "Adapter isConnected: $isConnected for $deviceDisplayName (Status: ${_connectionStatus.value})")
                         if (isConnected) {
@@ -228,7 +235,7 @@ class BleConnector(
                 }
 
                 // Observe the Event Flow from the Communicator.
-                launch {
+                launch(start = CoroutineStart.UNDISPATCHED) {
                     comm.getEventsFlow().collect { event ->
                         handleBluetoothEvent(event, connectedDeviceInfo)
                     }
@@ -249,6 +256,7 @@ class BleConnector(
         LogManager.d(TAG, "BluetoothEvent received: $event for $deviceDisplayName")
 
         when (event) {
+            is BluetoothEvent.Drain -> event.acknowledged.complete(Unit)
             is BluetoothEvent.Listening -> {
                 // Broadcast-only: scan started for target MAC (no GATT connection)
                 LogManager.i(TAG, "Event: Listening for broadcasts from ${event.deviceAddress}")
@@ -280,7 +288,7 @@ class BleConnector(
                             messageFormatArgs = listOf(deviceDisplayName)
                         )
                     )
-                    releaseActiveCommunicator(logPrefix = "BroadcastComplete: ")
+                    requestRelease(logPrefix = "BroadcastComplete: ")
                 } else {
                     LogManager.w(TAG, "BroadcastComplete for unexpected address ${event.deviceAddress} (state=${_connectionStatus.value})")
                 }
@@ -311,7 +319,7 @@ class BleConnector(
                     _connectionStatus.value = ConnectionStatus.DISCONNECTED
                     _connectedDeviceAddress.value = null
                     _connectedDeviceName.value = null
-                    releaseActiveCommunicator(logPrefix = "Disconnected event: ")
+                    requestRelease(logPrefix = "Disconnected event: ")
                 } else {
                     LogManager.w(TAG, "Disconnected event for unexpected address ${event.deviceAddress} or status ${_connectionStatus.value}")
                 }
@@ -332,7 +340,7 @@ class BleConnector(
                     _connectionError.value = "Connection to $deviceDisplayName failed: ${event.error}"
                     _connectedDeviceAddress.value = null
                     _connectedDeviceName.value = null
-                    releaseActiveCommunicator(logPrefix = "ConnectionFailed event: ")
+                    requestRelease(logPrefix = "ConnectionFailed event: ")
                 } else {
                     LogManager.w(TAG, "ConnectionFailed event for unexpected address ${event.deviceAddress} or status ${_connectionStatus.value}")
                 }
@@ -517,7 +525,9 @@ class BleConnector(
             }
 
             try {
-                val measurementId = measurementFacade.saveMeasurementFromBleDevice(newDbMeasurement, values)
+                val measurementId = measurementFacade.saveMeasurementFromBleDevice(
+                    newDbMeasurement, values, measurementData.compositionProfileUserId,
+                )
                 LogManager.i(
                     TAG,
                     "Measurement from $deviceName for User $currentAppUserId saved (ID: $measurementId). Values: ${values.size}"
@@ -573,7 +583,7 @@ class BleConnector(
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
                 _connectedDeviceAddress.value = null
                 _connectedDeviceName.value = null
-                releaseActiveCommunicator(logPrefix = "Disconnect timeout: ")
+                requestRelease(logPrefix = "Disconnect timeout: ")
             }
         }
     }
@@ -585,8 +595,20 @@ class BleConnector(
      *
      * @param logPrefix A prefix string for log messages, useful for context.
      */
-    private fun releaseActiveCommunicator(logPrefix: String = "") {
+    private fun requestRelease(logPrefix: String) {
+        val expected = activeCommunicator
+        // Waiting inside the event collector would deadlock its own drain acknowledgement.
+        scope.launch {
+            lifecycleMutex.withLock {
+                if (activeCommunicator === expected) releaseActiveCommunicator(logPrefix)
+            }
+        }
+    }
+
+    private suspend fun releaseActiveCommunicator(logPrefix: String = "") {
         LogManager.d(TAG, "${logPrefix}Releasing active communicator: ${activeCommunicator?.javaClass?.simpleName}")
+        // Save jobs belong to the connector scope, not the observation job cancelled below.
+        activeCommunicator?.prepareForClose()
         communicatorJob?.cancel() // Important: Stop the job observing events.
         communicatorJob = null
         disconnectTimeoutJob?.cancel() // Also stop the timeout job for disconnects.
@@ -628,7 +650,7 @@ class BleConnector(
             disconnect() // Calls the disconnect logic, which also releases the communicator.
         } else {
             // If not connected/connecting, still ensure everything is clean.
-            releaseActiveCommunicator(logPrefix = "Closing manager: ")
+            requestRelease(logPrefix = "Closing manager: ")
         }
         LogManager.i(TAG, "BluetoothConnectionManager closed.")
     }

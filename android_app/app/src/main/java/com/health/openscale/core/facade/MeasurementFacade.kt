@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -252,10 +253,22 @@ class MeasurementFacade @Inject constructor(
     suspend fun saveMeasurementFromBleDevice(
         measurement: Measurement,
         values: List<MeasurementValue>,
+        compositionProfileUserId: Int? = null,
     ) {
+        // Locally estimated composition belongs to the input profile AND weight.
+        // Selection changes, smart assignment and assisted weighing must not reuse it.
+        suspend fun valuesForOwner(ownerId: Int, weightChanged: Boolean = false): List<MeasurementValue> =
+            if (compositionProfileUserId == null) values
+            else ProfileCompositionGuard.forOwner(
+                values, query.getAllMeasurementTypes().first(),
+                compositionProfileUserId, ownerId, weightChanged,
+            )
+
         val ref = pendingReferenceUser
         if (ref != null) {
-            val finalValues = transformation.applyAssistedWeighing(measurement, values, ref)
+            val finalValues = transformation.applyAssistedWeighing(
+                measurement, valuesForOwner(measurement.userId, weightChanged = true), ref,
+            )
             crud.saveMeasurement(
                 measurement,
                 transformation.applyValueInheritance(measurement, finalValues)
@@ -265,7 +278,7 @@ class MeasurementFacade @Inject constructor(
             if (finalMeasurement != null) {
                 crud.saveMeasurement(
                     finalMeasurement,
-                    transformation.applyValueInheritance(finalMeasurement, values)
+                    transformation.applyValueInheritance(finalMeasurement, valuesForOwner(finalMeasurement.userId))
                 )
             }
         }
