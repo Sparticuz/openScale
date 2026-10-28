@@ -181,7 +181,7 @@ object LocaleUtils {
     @JvmStatic
     fun maxFractionFor(unit: UnitType): Int = when (unit) {
         UnitType.KG, UnitType.INCH -> 2
-        UnitType.KCAL, UnitType.BPM -> 0
+        UnitType.KCAL, UnitType.BPM, UnitType.MMHG -> 0
         else -> 1
     }
 

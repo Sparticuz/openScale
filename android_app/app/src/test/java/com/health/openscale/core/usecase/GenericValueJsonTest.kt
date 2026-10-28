@@ -196,6 +196,17 @@ class GenericValueJsonTest {
     }
 
     @Test
+    fun `blood pressure sync uses UCUM pressure code and preserves integer on round trip`() {
+        val pressure = MeasurementType(id = 80, identity = "ble.blood_pressure.systolic",
+            unit = UnitType.MMHG, inputType = InputFieldType.INT)
+        val json = GenericValueJson.build(
+            listOf(MeasurementValue(measurementId = 1, typeId = pressure.id, intValue = 120)),
+            mapOf(pressure.id to pressure))
+        assertThat(org.json.JSONArray(json).getJSONObject(0).getString("unit")).isEqualTo("mm[Hg]")
+        assertThat(GenericValueJson.parse(json, listOf(pressure)).single().second.intValue).isEqualTo(120)
+    }
+
+    @Test
     fun build_leavesOutPhotoValues() {
         val photo = MeasurementType(
             id = 70, identity = "user.photo_front", name = "Photo front", inputType = InputFieldType.IMAGE

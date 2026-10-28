@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -253,6 +254,16 @@ class MeasurementFacade @Inject constructor(
         measurement: Measurement,
         values: List<MeasurementValue>,
     ) {
+        // Weightless observations (e.g. blood pressure) are not weigh-ins. Assisted weighing
+        // would replace them with a weight difference; inheritance would synthesize body data.
+        // Preserve the handler's selected user and raw values. CRUD's formulas already require
+        // their own raw inputs, so no new persistence mode or schema is needed.
+        val weightId = query.getAllMeasurementTypes().first()
+            .firstOrNull { it.key == MeasurementType.WEIGHT }?.id
+        if (values.none { it.typeId == weightId && it.floatValue != null }) {
+            crud.saveMeasurement(measurement, values).getOrThrow()
+            return
+        }
         val ref = pendingReferenceUser
         if (ref != null) {
             val finalValues = transformation.applyAssistedWeighing(measurement, values, ref)

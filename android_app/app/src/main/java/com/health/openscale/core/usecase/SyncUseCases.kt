@@ -348,6 +348,7 @@ object GenericValueJson {
         UnitType.CM, UnitType.INCH -> "cm"
         UnitType.KCAL -> "kcal"
         UnitType.BPM -> "/min"
+        UnitType.MMHG -> "mm[Hg]"
         UnitType.OHM -> "Ohm"
         UnitType.NONE -> ""
     }

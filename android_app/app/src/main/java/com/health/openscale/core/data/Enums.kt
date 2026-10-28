@@ -380,6 +380,7 @@ enum class UnitType(val displayName: String) {
     INCH("in"),
     KCAL("kcal"),
     BPM("bpm"),
+    MMHG("mmHg"),
     OHM("Ω"),
     NONE("");
 

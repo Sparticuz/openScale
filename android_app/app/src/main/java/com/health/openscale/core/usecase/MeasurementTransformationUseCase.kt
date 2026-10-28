@@ -366,8 +366,8 @@ class MeasurementTransformationUseCase @Inject constructor(
     }
 
     /**
-     * Fills the gaps in [measurement] from the chronologically preceding measurement of the same
-     * user — the one and only inheritance rule in the app, used both when a scale delivers a
+     * Fills the gaps in [measurement] from the chronologically preceding eligible measurement of the same
+     * user (skipping BP/pulse-only observations) — the one inheritance rule used both when a scale delivers a
      * measurement and when the "new measurement" form is pre-filled.
      *
      * A scale only reports what it can weigh, so everything the user keeps by hand — waist, hips,
@@ -400,7 +400,12 @@ class MeasurementTransformationUseCase @Inject constructor(
         val previous = query.getMeasurementsForUser(measurement.userId).first()
             .firstOrNull {
                 it.measurement.id != measurement.id &&
-                    it.measurement.timestamp < measurement.timestamp
+                    it.measurement.timestamp < measurement.timestamp &&
+                    // A BP/pulse-only session is not a source for body-data inheritance.
+                    // Keep weightless manual body entries eligible (waist, calipers, custom).
+                    !(it.values.any { v -> v.type.unit == UnitType.MMHG } &&
+                        it.values.all { v -> v.type.unit == UnitType.MMHG ||
+                            v.type.key == MeasurementType.HEART_RATE })
             } ?: return values
 
         val presentTypeIds = values.map { it.typeId }.toSet()
@@ -409,6 +414,9 @@ class MeasurementTransformationUseCase @Inject constructor(
             val type = previousValue.type
             if (type.id in presentTypeIds) return@mapNotNull null
             if (type.isDerived || type.isInternal || !type.isEnabled) return@mapNotNull null
+            // Blood pressure is a point-in-time observation, not a body dimension to carry
+            // onto a later weigh-in or prefill as though it had just been measured again.
+            if (type.unit == UnitType.MMHG) return@mapNotNull null
 
             when (type.inputType) {
                 InputFieldType.FLOAT -> previousValue.value.floatValue
