@@ -1056,4 +1056,20 @@
     <string name="dialog_message_export_photos">Export only the CSV, or a ZIP file with the CSV and all photos? The ZIP can be imported again, photos included.</string>
     <string name="action_export_csv_only">CSV only</string>
     <string name="action_export_zip_with_photos">ZIP with photos</string>
+    <string name="measurement_type_systolic">Systolic blood pressure</string>
+    <string name="measurement_type_diastolic">Diastolic blood pressure</string>
+    <string name="evolv_setup_description">Select the intended openScale user before syncing. For first setup or re-pairing, hold the cuff’s connection button for at least two seconds until pairing mode appears, tap Pair on next connection below, then connect. Accept Android’s Bluetooth pairing prompt if shown. Pairing replaces the cuff’s application key; the vendor app may need to pair again. Normal sync sets the cuff’s clock for future readings and acknowledges pending readings only after openScale saves them. Acknowledged readings may no longer transfer to the vendor app. Old readings with invalid dates remain pending; setting the clock cannot repair them. Device times use the phone’s current time zone.</string>
+    <string name="evolv_pair_button">Pair on next connection</string>
+    <string name="evolv_pair_armed">Pairing armed — tap to cancel</string>
+    <string name="evolv_setup_required">Pair this Evolv in Bluetooth device settings before syncing.</string>
+    <string name="evolv_setup_save_failed">Could not save Evolv setup securely. No new application key was sent. Try setup again.</string>
+    <string name="evolv_unlock_failed">Evolv rejected its saved application key. Use Pair on next connection in device settings to re-pair explicitly.</string>
+    <string name="evolv_transfer_failed">Evolv transfer failed. Any unconfirmed readings remain pending; reconnect to retry.</string>
+    <string name="evolv_save_failed">Evolv reading was not confirmed saved for the selected user. Pending readings were not acknowledged; reconnect to retry.</string>
+    <string name="evolv_pending_changed">New Evolv data arrived during import. Pending readings were not acknowledged; reconnect to sync again.</string>
+    <string name="evolv_invalid_record">A pending Evolv reading has invalid data or an unset date. It was not acknowledged. Clock synchronization only fixes future readings.</string>
+    <string name="evolv_metadata_invalid">Unrecognized Evolv settings or clock checksum. Sync stopped without acknowledging pending readings.</string>
+    <string name="evolv_sync_complete">Evolv sync completed: %1$d pending readings saved.</string>
+    <string name="evolv_movement">Movement detected (device)</string>
+    <string name="evolv_irregular_heartbeat">Irregular heartbeat detected (device)</string>
 </resources>

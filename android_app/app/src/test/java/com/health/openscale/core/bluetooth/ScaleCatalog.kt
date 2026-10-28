@@ -62,6 +62,7 @@ import com.health.openscale.core.bluetooth.scales.MiScaleS400Handler
 import com.health.openscale.core.bluetooth.scales.OkOkHandler
 import com.health.openscale.core.bluetooth.scales.RedmondSkybalanceHandler
 import com.health.openscale.core.bluetooth.scales.OmronWlcHandler
+import com.health.openscale.core.bluetooth.scales.OmronEvolvHandler
 import com.health.openscale.core.bluetooth.scales.PicoocHandler
 import com.health.openscale.core.bluetooth.scales.PlainSigScaleHandler
 import com.health.openscale.core.bluetooth.scales.PicoocBroadcastHandler
@@ -325,6 +326,7 @@ object ScaleCatalog {
         device("1X-LINE") claimedBy BodyConnectHandler::class.java,
         device("10376BAA") claimedBy WeightGurusA3Handler::class.java,
         device("HBF-702T") claimedBy OmronWlcHandler::class.java,
+        device("BLESmart_0000011F001122334455") claimedBy OmronEvolvHandler::class.java,
         device("KRD-703T") claimedBy OmronWlcHandler::class.java,
         device("HBF-227T") claimedBy OmronWlcHandler::class.java,
         device("HBF-228T") claimedBy OmronWlcHandler::class.java,
