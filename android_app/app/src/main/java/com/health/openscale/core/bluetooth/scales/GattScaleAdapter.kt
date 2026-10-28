@@ -203,7 +203,7 @@ class GattScaleAdapter(
             characteristic: BluetoothGattCharacteristic,
             status: GattStatus
         ) {
-            LogManager.d(TAG,"\u2190 write response chr=${characteristic.uuid} len=${value.size} status=${status} ${value.toHexPreview(24)}")
+            LogManager.d(TAG,"\u2190 write response chr=${characteristic.uuid} len=${value.size} status=${status} ${safePayloadPreview(characteristic.uuid, value)}")
 
             deferredMap[characteristic.uuid]?.let { op ->
                 op.deferred.complete(Unit)
@@ -230,7 +230,7 @@ class GattScaleAdapter(
             characteristic: BluetoothGattCharacteristic,
             status: GattStatus
         ) {
-            LogManager.d(TAG,"\u2190 received data chr=${characteristic.uuid} len=${value.size} status=${status} ${value.toHexPreview(24)}")
+            LogManager.d(TAG,"\u2190 received data chr=${characteristic.uuid} len=${value.size} status=${status} ${safePayloadPreview(characteristic.uuid, value)}")
 
             handler.handleNotification(characteristic.uuid, value)
 
@@ -245,6 +245,7 @@ class GattScaleAdapter(
     // Transport exposed to handler; operations are queued automatically
     // -------------------------------------------------------------------------------------------------
     private val transport = object : ScaleDeviceHandler.Transport {
+        // See safePayloadPreview: application keys must not enter the app debug log.
 
         override fun setNotifyOn(service: UUID, characteristic: UUID) {
             opQueue.trySend {
@@ -314,7 +315,7 @@ class GattScaleAdapter(
                 ioGap(if (withResponse) tuning.writeWithResponseDelayMs else tuning.writeWithoutResponseDelayMs)
                 p.writeCharacteristic(service, characteristic, payload, type)
 
-                LogManager.d(TAG,"\u2192 write to chr=$characteristic svc=$service len=${payload.size} withResp=$withResponse ${payload.toHexPreview(24)}")
+                LogManager.d(TAG,"\u2192 write to chr=$characteristic svc=$service len=${payload.size} withResp=$withResponse ${safePayloadPreview(characteristic, payload)}")
 
                 try {
                     withTimeout(tuning.operationTimeoutMs.milliseconds) {
@@ -410,6 +411,11 @@ class GattScaleAdapter(
             }
         }
     }
+
+    /** Includes write acknowledgements, which echo the original application key. */
+    private fun safePayloadPreview(characteristic: UUID, bytes: ByteArray): String =
+        if (characteristic == OmronWlcHandler.CHR_UNLOCK) "[redacted]"
+        else bytes.toHexPreview(24)
 
     override fun doDisconnect() {
         runCatching { if (::central.isInitialized) central.stopScan() }

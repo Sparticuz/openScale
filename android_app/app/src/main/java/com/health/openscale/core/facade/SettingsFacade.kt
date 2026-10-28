@@ -1172,7 +1172,6 @@ class SettingsFacadeImpl @Inject constructor(
 
 
     override suspend fun <T> saveSetting(keyName: String, value: T) {
-        //LogManager.v(TAG, "Saving setting: key='$keyName', value='$value', type='${value!!::class.simpleName}'")
         try {
             dataStore.edit { preferences ->
                 when (value) {
@@ -1200,8 +1199,9 @@ class SettingsFacadeImpl @Inject constructor(
                 }
             }
            // LogManager.d(TAG, "Successfully saved setting: key='$keyName'")
-        } catch (e: Exception) {
-            LogManager.e(TAG, "Failed to save setting: key='$keyName', value='$value'", e)
+        } catch (_: Exception) {
+            // Settings can contain credentials. Exception messages/causes can echo them too.
+            LogManager.e(TAG, "Failed to save setting: key='$keyName'")
             // Depending on the app's needs, you might want to rethrow or handle specific exceptions differently.
         }
     }
