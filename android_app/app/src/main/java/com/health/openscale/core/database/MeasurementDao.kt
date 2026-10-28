@@ -142,4 +142,8 @@ interface MeasurementDao {
      */
     @Query("SELECT * FROM Measurement WHERE id = :id")
     suspend fun getMeasurementById(id: Int): Measurement?
+
+    @Transaction
+    @Query("SELECT * FROM Measurement WHERE userId = :userId AND timestamp = :timestamp LIMIT 1")
+    suspend fun getAtTimestamp(userId: Int, timestamp: Long): MeasurementWithValues?
 }

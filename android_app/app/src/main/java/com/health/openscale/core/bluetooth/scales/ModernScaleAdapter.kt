@@ -236,6 +236,13 @@ class FacadeDriverSettings(
         scope.launch { facade.saveSetting(k, value) }
     }
 
+    override suspend fun putStringDurably(key: String, value: String): Boolean {
+        val k = prefix + key
+        if (!facade.saveStringDurably(k, value)) return false
+        mem[k] = value
+        return true
+    }
+
     override fun remove(key: String) {
         val k = prefix + key
         mem.remove(k)
@@ -416,6 +423,17 @@ abstract class ModernScaleAdapter(
         override fun onPublish(measurement: ScaleMeasurement) {
             val addr = targetAddress ?: "unknown"
             _events.tryEmit(BluetoothEvent.MeasurementReceived(measurement, addr))
+        }
+
+        override suspend fun onPublishConfirmed(measurement: ScaleMeasurement): Boolean {
+            if (_events.subscriptionCount.value == 0) return false
+            val receipt = kotlinx.coroutines.CompletableDeferred<Boolean>()
+            return try {
+                _events.emit(BluetoothEvent.MeasurementReceived(measurement, targetAddress ?: return false, receipt))
+                kotlinx.coroutines.withTimeout(30_000) { receipt.await() }
+            } finally {
+                receipt.cancel()
+            }
         }
 
         override fun onInfo(@StringRes resId: Int, vararg args: Any) {

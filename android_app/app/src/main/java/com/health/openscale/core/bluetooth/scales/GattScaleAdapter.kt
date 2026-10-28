@@ -65,8 +65,9 @@ class GattScaleAdapter(
 
     private val tuning: BleGattTuning = profile.forGatt()
     private lateinit var central: BluetoothCentralManager
-    private var currentPeripheral: BluetoothPeripheral? = null
+    @Volatile private var currentPeripheral: BluetoothPeripheral? = null
 
+    private val writeSession = QueuedWriteSession()
     private val opQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
     private data class PendingOp(
@@ -127,6 +128,7 @@ class GattScaleAdapter(
         }
 
         override fun onConnected(peripheral: BluetoothPeripheral) {
+            writeSession.invalidate()
             scope.launch {
                 currentPeripheral = peripheral
                 _isConnected.value = true
@@ -159,6 +161,7 @@ class GattScaleAdapter(
         }
 
         override fun onDisconnected(peripheral: BluetoothPeripheral, status: HciStatus) {
+            writeSession.invalidate()
             scope.launch {
                 LogManager.i(TAG, "Disconnected ${peripheral.address}: $status")
                 runCatching { handler.handleDisconnected() }
@@ -283,8 +286,10 @@ class GattScaleAdapter(
         }
 
         override fun write(service: UUID, characteristic: UUID, payload: ByteArray, withResponse: Boolean) {
+            val token = writeSession.token()
+            val p = currentPeripheral ?: return
+            val bytes = payload.copyOf()
             opQueue.trySend {
-                val p = currentPeripheral ?: return@trySend
                 val ch = p.getCharacteristic(service, characteristic) ?: return@trySend
 
                 val opId = ++nextOpId
@@ -311,8 +316,20 @@ class GattScaleAdapter(
                     }
                 }
 
-                ioGap(if (withResponse) tuning.writeWithResponseDelayMs else tuning.writeWithoutResponseDelayMs)
-                p.writeCharacteristic(service, characteristic, payload, type)
+                var submitted = false
+                writeSession.write(token, {
+                    ioGap(if (withResponse) tuning.writeWithResponseDelayMs else tuning.writeWithoutResponseDelayMs)
+                }) {
+                    if (currentPeripheral === p) {
+                        p.writeCharacteristic(service, characteristic, bytes, type)
+                        submitted = true
+                    }
+                }
+                if (!submitted) {
+                    deferredMap.remove(characteristic)
+                    deferred.cancel()
+                    return@trySend
+                }
 
                 LogManager.d(TAG,"\u2192 write to chr=$characteristic svc=$service len=${payload.size} withResp=$withResponse ${payload.toHexPreview(24)}")
 
@@ -365,7 +382,10 @@ class GattScaleAdapter(
             }
         }
 
+        override fun cancelPendingWrites() { writeSession.invalidate() }
+
         override fun disconnect() {
+            writeSession.invalidate()
             currentPeripheral?.let { central.cancelConnection(it) }
         }
 
@@ -381,6 +401,7 @@ class GattScaleAdapter(
     // Connection management
     // -------------------------------------------------------------------------------------------------
     override fun doConnect(address: String, selectedUser: ScaleUser) {
+        writeSession.invalidate()
         if (!::central.isInitialized) {
             central = BluetoothCentralManager(context, centralCallback, mainHandler)
         }
@@ -412,12 +433,14 @@ class GattScaleAdapter(
     }
 
     override fun doDisconnect() {
+        writeSession.invalidate()
         runCatching { if (::central.isInitialized) central.stopScan() }
         currentPeripheral?.let { runCatching { central.cancelConnection(it) } }
         currentPeripheral = null
     }
 
     override fun close() {
+        writeSession.invalidate()
         // Stop accepting new BLE operations and release the Blessed central
         // (its broadcast receivers) before the base cancels the coroutine scope,
         // which terminates the busy-waiting op-queue worker.

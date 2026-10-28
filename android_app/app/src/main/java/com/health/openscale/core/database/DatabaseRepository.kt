@@ -17,6 +17,7 @@
  */
 package com.health.openscale.core.database
 
+import androidx.room.withTransaction
 import com.health.openscale.core.data.Measurement
 import com.health.openscale.core.data.MeasurementType
 import com.health.openscale.core.data.MeasurementValue
@@ -142,6 +143,28 @@ class DatabaseRepository @Inject constructor(
         measurementDao.delete(measurement)
     }
 
+
+    /** Atomic insert + exact readback for devices that acknowledge transferred observations.
+     * An occupied timestamp is not success unless every requested raw value already exists.
+     * Failed constraints/cancellation roll back the parent and all values together.
+     */
+    suspend fun insertAndConfirmMeasurement(
+        measurement: Measurement, values: List<MeasurementValue>
+    ): Int = database.withTransaction {
+        require(measurement.id == 0 && measurement.userId > 0 && values.isNotEmpty())
+        require(values.map { it.typeId }.distinct().size == values.size)
+        val id = measurementDao.insert(measurement).toInt()
+        if (id != -1) {
+            values.forEach { measurementValueDao.insert(it.copy(id = 0, measurementId = id)) }
+        }
+        val saved = checkNotNull(measurementDao.getAtTimestamp(measurement.userId, measurement.timestamp))
+        check(saved.measurement.userId == measurement.userId && saved.measurement.timestamp == measurement.timestamp)
+        check(values.all { expected ->
+            val actual = saved.values.filter { it.value.typeId == expected.typeId }.singleOrNull()?.value
+            actual?.copy(id = 0, measurementId = 0) == expected.copy(id = 0, measurementId = 0)
+        }) { "Stored observation does not match transferred values" }
+        saved.measurement.id
+    }
 
     // --- Measurement Value Operations ---
 

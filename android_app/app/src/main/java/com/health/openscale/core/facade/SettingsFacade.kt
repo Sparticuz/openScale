@@ -46,6 +46,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
@@ -321,6 +322,8 @@ interface SettingsFacade {
      * The type T determines the preference key type.
      */
     suspend fun <T> saveSetting(keyName: String, value: T)
+    /** Acknowledged secret write; implementations must not log the value on failure. */
+    suspend fun saveStringDurably(keyName: String, value: String): Boolean = false
 }
 
 /**
@@ -1170,6 +1173,11 @@ class SettingsFacadeImpl @Inject constructor(
             .distinctUntilChanged() as Flow<T>
     }
 
+
+    override suspend fun saveStringDurably(keyName: String, value: String): Boolean {
+        dataStore.edit { it[stringPreferencesKey(keyName)] = value }
+        return dataStore.data.first()[stringPreferencesKey(keyName)] == value
+    }
 
     override suspend fun <T> saveSetting(keyName: String, value: T) {
         //LogManager.v(TAG, "Saving setting: key='$keyName', value='$value', type='${value!!::class.simpleName}'")

@@ -70,6 +70,7 @@ class BleConnector(
     private val scaleFactory: ScaleFactory,
     private val measurementFacade: MeasurementFacade,
     private val getCurrentUserId: () -> Int?,
+    private val createCommunicator: (ScannedDeviceInfo) -> ScaleCommunicator? = scaleFactory::createCommunicator,
     ) : AutoCloseable {
 
     private companion object {
@@ -164,7 +165,7 @@ class BleConnector(
             _connectedDeviceName.value = deviceInfo.name
             _connectionError.value = null // Clear previous errors.
 
-            activeCommunicator = scaleFactory.createCommunicator(deviceInfo)
+            activeCommunicator = createCommunicator(deviceInfo)
 
             if (activeCommunicator == null) {
                 LogManager.e(TAG, "ScaleFactory could NOT create a communicator for $deviceDisplayName. Connection ABORTED.")
@@ -340,7 +341,7 @@ class BleConnector(
 
             is BluetoothEvent.MeasurementReceived -> {
                 LogManager.i(TAG, "Event: Measurement received from $deviceDisplayName: Weight ${event.measurement[MeasurementType.WEIGHT]}")
-                saveMeasurementFromEvent(event.measurement, deviceDisplayName)
+                saveMeasurementFromEvent(event.measurement, deviceDisplayName, event.persistence)
             }
 
             is BluetoothEvent.DeviceMessage -> {
@@ -420,10 +421,13 @@ class BleConnector(
      */
     private fun saveMeasurementFromEvent(
         measurementData: ScaleMeasurement,
-        deviceName: String
+        deviceName: String,
+        receipt: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
     ) {
         val currentAppUserId = getCurrentUserId()
-        if (currentAppUserId == 0) {
+        if (currentAppUserId == null || currentAppUserId == 0 ||
+            (receipt != null && currentAppUserId != measurementData.userId)) {
+            receipt?.complete(false)
             LogManager.e(TAG, "($deviceName): No App User ID to save measurement.")
             _snackbarEvents.tryEmit(
                 SnackbarEvent(
@@ -437,87 +441,92 @@ class BleConnector(
 
         // Perform DB work on IO dispatcher.
         scope.launch(Dispatchers.IO) {
-            val newDbMeasurement = Measurement(
-                userId = currentAppUserId ?: 0,
-                timestamp = measurementData.dateTime?.time ?: System.currentTimeMillis()
-            )
+            try {
+                val newDbMeasurement = Measurement(
+                    userId = currentAppUserId,
+                    timestamp = measurementData.dateTime?.time ?: System.currentTimeMillis()
+                )
 
-            // Load all measurement types once: predefined ones are resolved from this
-            // snapshot, device-contributed ones are created on first use.
-            val types = measurementFacade.getAllMeasurementTypes().firstOrNull()
-                ?: run {
-                    LogManager.e(TAG, "Could not load MeasurementTypes from DB for $deviceName.")
+                // Load all measurement types once: predefined ones are resolved from this
+                // snapshot, device-contributed ones are created on first use.
+                val types = measurementFacade.getAllMeasurementTypes().firstOrNull()
+                    ?: run {
+                        LogManager.e(TAG, "Could not load MeasurementTypes from DB for $deviceName.")
+                        _snackbarEvents.tryEmit(
+                            SnackbarEvent(
+                                messageResId = R.string.bluetooth_connector_measurement_types_not_loaded
+                            )
+                        )
+                        return@launch
+                    }
+                val typesByIdentity = types.associateBy { it.identity }
+
+                // One loop for everything the handler reported. The key declares which
+                // column its value lands in and which unit it arrived in; the row knows the
+                // unit the user wants. ScaleMeasurement.set already dropped values that never
+                // describe a real measurement, so what is in the map is worth persisting —
+                // which is also why resolving (and thus creating) a device type only happens
+                // for values that survived: a broken packet must not leave an empty type
+                // behind.
+                //
+                // BMR goes in first so its presence guards the per-value recalc that runs
+                // after WEIGHT lands; otherwise DerivedValuesProcess would write its
+                // Mifflin-St Jeor BMR before the device's BIA-based BMR arrives, leaving two
+                // rows for the same typeId.
+                val values = mutableListOf<MeasurementValue>()
+                val reported = measurementData.values.entries
+                    .sortedByDescending { it.key == MeasurementType.BMR }
+
+                for ((key, raw) in reported) {
+                    val type = typesByIdentity[key.identity]
+                        ?: measurementFacade.resolveOrCreateMeasurementType(key)
+                        ?: run {
+                            LogManager.w(TAG, "($deviceName): Skipping ${key.identity}, type unavailable.")
+                            null
+                        } ?: continue
+
+                    values += when (key.inputType) {
+                        InputFieldType.FLOAT -> MeasurementValue(
+                            measurementId = 0,
+                            typeId = type.id,
+                            // The user may have configured a different unit than the wire one.
+                            floatValue = com.health.openscale.core.utils.ConverterUtils
+                                .convertFloatValueUnit(
+                                    if (raw is UnitValue) raw.value else raw as Float,
+                                    key.wireUnit, type.unit
+                                )
+                        )
+                        InputFieldType.INT -> MeasurementValue(
+                            measurementId = 0, typeId = type.id,
+                            intValue = if (raw is Bpm) raw.value else raw as Int
+                        )
+                        InputFieldType.TEXT -> MeasurementValue(
+                            measurementId = 0, typeId = type.id, textValue = raw as String
+                        )
+                        InputFieldType.DATE, InputFieldType.TIME -> MeasurementValue(
+                            measurementId = 0, typeId = type.id, dateValue = (raw as java.util.Date).time
+                        )
+                        InputFieldType.USER, InputFieldType.IMAGE -> continue
+                    }
+                }
+
+                if (values.isEmpty()) {
+                    LogManager.w(TAG, "No valid values from measurement of $deviceName to save.")
                     _snackbarEvents.tryEmit(
                         SnackbarEvent(
-                            messageResId = R.string.bluetooth_connector_measurement_types_not_loaded
+                            messageResId = R.string.bluetooth_connector_measurement_no_values,
+                            messageFormatArgs = listOf(deviceName)
                         )
                     )
                     return@launch
                 }
-            val typesByIdentity = types.associateBy { it.identity }
 
-            // One loop for everything the handler reported. The key declares which
-            // column its value lands in and which unit it arrived in; the row knows the
-            // unit the user wants. ScaleMeasurement.set already dropped values that never
-            // describe a real measurement, so what is in the map is worth persisting —
-            // which is also why resolving (and thus creating) a device type only happens
-            // for values that survived: a broken packet must not leave an empty type
-            // behind.
-            //
-            // BMR goes in first so its presence guards the per-value recalc that runs
-            // after WEIGHT lands; otherwise DerivedValuesProcess would write its
-            // Mifflin-St Jeor BMR before the device's BIA-based BMR arrives, leaving two
-            // rows for the same typeId.
-            val values = mutableListOf<MeasurementValue>()
-            val reported = measurementData.values.entries
-                .sortedByDescending { it.key == MeasurementType.BMR }
-
-            for ((key, raw) in reported) {
-                val type = typesByIdentity[key.identity]
-                    ?: measurementFacade.resolveOrCreateMeasurementType(key)
-                    ?: run {
-                        LogManager.w(TAG, "($deviceName): Skipping ${key.identity}, type unavailable.")
-                        null
-                    } ?: continue
-
-                values += when (key.inputType) {
-                    InputFieldType.FLOAT -> MeasurementValue(
-                        measurementId = 0,
-                        typeId = type.id,
-                        // The user may have configured a different unit than the wire one.
-                        floatValue = com.health.openscale.core.utils.ConverterUtils
-                            .convertFloatValueUnit(
-                                if (raw is UnitValue) raw.value else raw as Float,
-                                key.wireUnit, type.unit
-                            )
-                    )
-                    InputFieldType.INT -> MeasurementValue(
-                        measurementId = 0, typeId = type.id,
-                        intValue = if (raw is Bpm) raw.value else raw as Int
-                    )
-                    InputFieldType.TEXT -> MeasurementValue(
-                        measurementId = 0, typeId = type.id, textValue = raw as String
-                    )
-                    InputFieldType.DATE, InputFieldType.TIME -> MeasurementValue(
-                        measurementId = 0, typeId = type.id, dateValue = (raw as java.util.Date).time
-                    )
-                    InputFieldType.USER, InputFieldType.IMAGE -> continue
-                }
-            }
-
-            if (values.isEmpty()) {
-                LogManager.w(TAG, "No valid values from measurement of $deviceName to save.")
-                _snackbarEvents.tryEmit(
-                    SnackbarEvent(
-                        messageResId = R.string.bluetooth_connector_measurement_no_values,
-                        messageFormatArgs = listOf(deviceName)
-                    )
-                )
-                return@launch
-            }
-
-            try {
-                val measurementId = measurementFacade.saveMeasurementFromBleDevice(newDbMeasurement, values)
+                val measurementId = if (receipt != null) {
+                    check(receipt.isActive && getCurrentUserId() == currentAppUserId)
+                    check(values.size == reported.size)
+                    measurementFacade.saveConfirmedObservation(newDbMeasurement, values)
+                } else measurementFacade.saveMeasurementFromBleDevice(newDbMeasurement, values)
+                receipt?.complete(getCurrentUserId() == currentAppUserId)
                 LogManager.i(
                     TAG,
                     "Measurement from $deviceName for User $currentAppUserId saved (ID: $measurementId). Values: ${values.size}"
@@ -525,6 +534,8 @@ class BleConnector(
                 pendingSavedCount.incrementAndGet()
                 lastSavedArgs = listOf(measurementData[MeasurementType.WEIGHT]?.value ?: 0f, deviceName)
                 savedBurstSignal.tryEmit(Unit)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 LogManager.e(TAG, "Error saving measurement from $deviceName.", e)
                 _snackbarEvents.tryEmit(
@@ -533,6 +544,9 @@ class BleConnector(
                         messageFormatArgs = listOf(deviceName)
                     )
                 )
+            } finally {
+                // Missing types, failed/cancelled save and early returns never confirm delivery.
+                receipt?.complete(false)
             }
         }
     }

@@ -404,8 +404,8 @@ class MeasurementTransformationUseCase @Inject constructor(
                     // A BP/pulse-only session is not a source for body-data inheritance.
                     // Keep weightless manual body entries eligible (waist, calipers, custom).
                     !(it.values.any { v -> v.type.unit == UnitType.MMHG } &&
-                        it.values.all { v -> v.type.unit == UnitType.MMHG ||
-                            v.type.key == MeasurementType.HEART_RATE })
+                        it.values.filterNot { v -> v.type.isInternal }.all { v ->
+                            v.type.unit == UnitType.MMHG || v.type.key == MeasurementType.HEART_RATE })
             } ?: return values
 
         val presentTypeIds = values.map { it.typeId }.toSet()

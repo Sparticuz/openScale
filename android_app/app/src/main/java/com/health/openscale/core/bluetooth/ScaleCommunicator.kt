@@ -54,7 +54,9 @@ sealed class BluetoothEvent {
     /** Emitted when a parsed measurement is available. */
     data class MeasurementReceived(
         val measurement: ScaleMeasurement,
-        val deviceAddress: String
+        val deviceAddress: String,
+        // Optional durable receipt. Ordinary scale publication keeps its existing behavior.
+        val persistence: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
     ) : BluetoothEvent()
 
     /** Emitted for generic device-related errors. */

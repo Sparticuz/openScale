@@ -282,6 +282,15 @@ class MeasurementFacade @Inject constructor(
         }
     }
 
+    /** Used only by transfer protocols requiring durable, exact raw observation receipts.
+     * Weight-based devices retain their existing assignment/transformation path.
+     */
+    suspend fun saveConfirmedObservation(measurement: Measurement, values: List<MeasurementValue>): Int {
+        val weightId = query.getAllMeasurementTypes().first().firstOrNull { it.key == MeasurementType.WEIGHT }?.id
+        require(values.none { it.typeId == weightId })
+        return crud.saveConfirmedObservation(measurement, values)
+    }
+
     fun setPendingReferenceUserForBle(referenceUser: User?) {
         pendingReferenceUser = referenceUser
     }

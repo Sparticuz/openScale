@@ -184,6 +184,7 @@ abstract class ScaleDeviceHandler {
     }
 
     internal fun handleDisconnected() {
+        cancelPendingWrites()
         logD("handleDisconnected()")
         try {
             onDisconnected()
@@ -195,6 +196,7 @@ abstract class ScaleDeviceHandler {
 
     internal fun detach() {
         logD("detach()")
+        cancelPendingWrites()
         transport = null
         callbacks = null
     }
@@ -238,6 +240,9 @@ abstract class ScaleDeviceHandler {
             ?: logW("writeTo called without transport")
     }
 
+    /** Synchronously invalidate queued/pacing writes before resetting protocol state. */
+    protected fun cancelPendingWrites() { transport?.cancelPendingWrites() }
+
     /** Read a characteristic (rare for scales; most data comes via NOTIFY). */
     protected fun readFrom(service: UUID, characteristic: UUID) {
         transport?.read(service, characteristic)
@@ -250,6 +255,15 @@ abstract class ScaleDeviceHandler {
         callbacks?.onPublish(measurement)
             ?: logW("publish called without callbacks")
     }
+
+    /** Wait for exact durable persistence, not publication/SharedFlow consumption. */
+    protected suspend fun publishConfirmed(measurement: ScaleMeasurement): Boolean =
+        callbacks?.onPublishConfirmed(measurement) ?: false
+
+    protected suspend fun settingsPutStringDurably(key: String, value: String): Boolean =
+        settings.putStringDurably(key, value)
+
+    protected fun deviceAddress(): String? = transport?.deviceAddress()
 
     /** Ask the adapter to terminate the link. */
     protected fun requestDisconnect() {
@@ -339,8 +353,10 @@ abstract class ScaleDeviceHandler {
         fun setNotifyOn(service: UUID, characteristic: UUID)
         fun write(service: UUID, characteristic: UUID, payload: ByteArray, withResponse: Boolean = true)
         fun read(service: UUID, characteristic: UUID)
+        fun cancelPendingWrites() {}
         fun disconnect()
         fun getPeripheral(): BluetoothPeripheral? = null
+        fun deviceAddress(): String? = getPeripheral()?.address
         fun hasCharacteristic(service: UUID, characteristic: UUID): Boolean
     }
 
@@ -362,6 +378,7 @@ abstract class ScaleDeviceHandler {
 
         fun getString(key: String, default: String? = null): String?
         fun putString(key: String, value: String)
+        suspend fun putStringDurably(key: String, value: String): Boolean = false
 
         fun remove(key: String)
     }
@@ -369,6 +386,7 @@ abstract class ScaleDeviceHandler {
     /** App callbacks to emit parsed results and user-visible messages. */
     interface Callbacks {
         fun onPublish(measurement: ScaleMeasurement)
+        suspend fun onPublishConfirmed(measurement: ScaleMeasurement): Boolean = false
         fun onInfo(@StringRes resId: Int, vararg args: Any) { /* optional */ }
         fun onWarn(@StringRes resId: Int, vararg args: Any) { /* optional */ }
         fun onError(@StringRes resId: Int, t: Throwable? = null, vararg args: Any) { /* optional */ }

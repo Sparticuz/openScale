@@ -92,9 +92,28 @@ class BloodPressurePersistenceTest {
         MeasurementValue(measurementId = 0, typeId = diastolicId, intValue = 80),
         MeasurementValue(measurementId = 0, typeId = pulseId, intValue = 70))
 
+    @Test fun `confirmed BP observation preserves all pressures pulse user and timestamp under assisted weighing`() = runBlocking {
+        val ref = repo.getUserById(userId).first()!!
+        facade.setPendingReferenceUserForBle(ref)
+        val m = Measurement(userId = userId, timestamp = 4000)
+        val id = facade.saveConfirmedObservation(m, bp())
+        assertThat(facade.saveConfirmedObservation(m, bp())).isEqualTo(id)
+        val saved = facade.getMeasurementWithValuesById(id).first()!!
+        assertThat(saved.measurement.userId).isEqualTo(userId)
+        assertThat(saved.measurement.timestamp).isEqualTo(4000L)
+        assertThat(saved.values.map { it.value.typeId }).containsExactly(systolicId, diastolicId, pulseId)
+        assertThat(saved.values.first { it.value.typeId == systolicId }.value.intValue).isEqualTo(120)
+        assertThat(saved.values.first { it.value.typeId == diastolicId }.value.intValue).isEqualTo(80)
+        assertThat(saved.values.first { it.value.typeId == pulseId }.value.intValue).isEqualTo(70)
+        assertThat(runCatching { facade.saveConfirmedObservation(m, bp().dropLast(1) + bp().last().copy(intValue = 71)) }.isFailure).isTrue()
+    }
+
     @Test fun `weigh ins still inherit manual body measurements but never old blood pressures`() = runBlocking {
         val prior = repo.insertMeasurement(Measurement(userId = userId, timestamp = 1500)).toInt()
         bp().forEach { repo.insertMeasurementValue(it.copy(measurementId = prior)) }
+        val metadataId = repo.insertMeasurementType(MeasurementType(identity = "ble.test.flags",
+            inputType = InputFieldType.INT, unit = UnitType.NONE, isInternal = true, isEnabled = false)).toInt()
+        repo.insertMeasurementValue(MeasurementValue(measurementId = prior, typeId = metadataId, intValue = 0))
         val waistId = repo.getAllMeasurementTypes().first().first { it.key == MeasurementType.WAIST }.id
         // T1 has weight + waist; T2 is strictly BP-only; T3 has weight only.
         facade.saveMeasurementFromBleDevice(Measurement(userId = userId, timestamp = 3000),

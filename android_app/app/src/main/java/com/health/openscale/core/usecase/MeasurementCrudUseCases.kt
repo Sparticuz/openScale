@@ -52,6 +52,21 @@ class MeasurementCrudUseCases @Inject constructor(
     ) {
     private var lastVibrateTime = 0L
 
+    /** Exact raw observation save; no body-weight transformations or duplicate-as-success sentinel. */
+    suspend fun saveConfirmedObservation(measurement: Measurement, values: List<MeasurementValue>): Int {
+        val id = databaseRepository.insertAndConfirmMeasurement(measurement, values)
+        // Persistence is already committed. Keep normal exports/widgets for this BLE path too;
+        // replay is idempotent at the database boundary, regardless of optional export failures.
+        val saved = measurement.copy(id = id)
+        val stored = databaseRepository.getValuesForMeasurement(id).first()
+        sync.triggerSyncInsert(saved, stored, "com.health.openscale.sync")
+        sync.triggerSyncInsert(saved, stored, "com.health.openscale.sync.oss")
+        sync.triggerSyncInsert(saved, stored, "com.health.openscale.sync.debug")
+        MeasurementWidget.refreshAll(appContext)
+        maybeVibrateOnMeasurement()
+        return id
+    }
+
     /**
      * Inserts or updates a [measurement] and reconciles its [values].
      *
